@@ -54,7 +54,7 @@ namespace {
 const int kUciInfoMinimumFrequencyMs = 5000;
 
 float SampleGumbel() {
-    float u = lczero::Random::Get().NextFloat();
+    float u = lczero::Random::Get().GetFloat();
     const float float_epsilon = std::numeric_limits<float>::epsilon();
     u = std::max(float_epsilon, u);
     u = std::min(1.0f - float_epsilon, u);
@@ -1634,8 +1634,8 @@ void SearchWorker::PickNodesToExtendTask(
     // First prepare visits_to_perform.
     if (current_path.back() == -1) {
       // Gumbel Planning Phase
-      if (search_->GetSearchType() == lczero::SearchType::GUMBEL && !node->gumbel_planned_) {
-        node->gumbel_planned_ = true; // Mark as planned
+      if (search_->GetSearchType() == lczero::SearchType::GUMBEL && !node->isGumbelPlanned()) {
+        node->setGumbelPlanned(true); // Mark as planned
         std::vector<std::pair<float, Move>> gumbel_candidates;
 
         for (auto edge_it = node->Edges().begin(); edge_it != node->Edges().end(); ++edge_it) {
@@ -1658,17 +1658,19 @@ void SearchWorker::PickNodesToExtendTask(
                 std::partial_sort(gumbel_candidates.begin(),
                                   gumbel_candidates.begin() + k_val,
                                   gumbel_candidates.end(),
-                                  std::greater<std::pair<float, Move>>());
-                node->gumbel_top_k_moves_.clear();
-                node->gumbel_top_k_moves_.reserve(k_val);
+                                  [](const std::pair<float, Move>& a, const std::pair<float, Move>& b) {
+                                      return a.first > b.first; // Compare only by the float score
+                                  });
+                node->clearGumbelTopKMoves();
+                node->reserveGumbelTopKMoves(k_val);
                 for (int i = 0; i < k_val; ++i) {
-                    node->gumbel_top_k_moves_.push_back(gumbel_candidates[i].second);
+                    node->addGumbelTopKMove(gumbel_candidates[i].second);
                 }
             } else {
-                 node->gumbel_top_k_moves_.clear(); // k=0 or negative
+                 node->clearGumbelTopKMoves(); // k=0 or negative
             }
         } else {
-            node->gumbel_top_k_moves_.clear(); // No candidates
+            node->clearGumbelTopKMoves(); // No candidates
         }
       }
 
@@ -1795,10 +1797,10 @@ void SearchWorker::PickNodesToExtendTask(
 
           // Modified Child Selection Score Calculation
           float calculated_score;
-          if (search_->GetSearchType() == lczero::SearchType::GUMBEL && node->gumbel_planned_ && !node->gumbel_top_k_moves_.empty()) {
+          if (search_->GetSearchType() == lczero::SearchType::GUMBEL && node->isGumbelPlanned() && !node->gumbelTopKMovesEmpty()) {
               Move current_move = cur_iters[idx].GetMove();
               bool in_plan = false;
-              for (const Move& planned_move : node->gumbel_top_k_moves_) {
+              for (const Move& planned_move : node->getGumbelTopKMoves()) {
                   if (planned_move == current_move) {
                       in_plan = true;
                       break;

@@ -260,6 +260,15 @@ class Node {
   // Index in parent edges - useful for correlated ordering.
   uint16_t Index() const { return index_; }
 
+  // Public accessors for Gumbel members
+  bool isGumbelPlanned() const { return gumbel_planned_; }
+  void setGumbelPlanned(bool planned) { gumbel_planned_ = planned; }
+  const std::vector<Move>& getGumbelTopKMoves() const { return gumbel_top_k_moves_; }
+  void clearGumbelTopKMoves() { gumbel_top_k_moves_.clear(); }
+  void reserveGumbelTopKMoves(size_t n) { gumbel_top_k_moves_.reserve(n); }
+  void addGumbelTopKMove(const Move& move) { gumbel_top_k_moves_.push_back(move); }
+  bool gumbelTopKMovesEmpty() const { return gumbel_top_k_moves_.empty(); }
+
   ~Node() {
     if (solid_children_ && child_) {
       // As a hack, solid_children is actually storing an array in here, release
