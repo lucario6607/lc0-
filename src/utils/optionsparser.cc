@@ -43,6 +43,12 @@
 #endif
 
 namespace lczero {
+
+// Define OptionId instances for the new UCI options (declarations are in optionsparser.h)
+const OptionId kSearchType("search-type", "SearchType", "The type of search algorithm to use (PUCT or Gumbel).");
+const OptionId kGumbelK("gumbel-k", "GumbelK", "The 'k' in top-k planning for Gumbel search.");
+const OptionId kGumbelVisitC("gumbel-visit-c", "GumbelVisitC", "The exploration constant 'c_visit' for Gumbel search.");
+
 namespace {
 const int kHelpIndent = 15;
 const int kUciLineIndent = 15;
@@ -51,7 +57,9 @@ const int kHelpWidth = 80;
 
 OptionsParser::Option::Option(const OptionId& id) : id_(id) {}
 
-OptionsParser::OptionsParser() : values_(*defaults_.AddSubdict("values")) {}
+OptionsParser::OptionsParser() : values_(*defaults_.AddSubdict("values")) {
+  // Options are now added in StringUciResponder::PopulateParams
+}
 
 std::vector<std::string> OptionsParser::ListOptionsUci() const {
   std::vector<std::string> result;

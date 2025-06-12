@@ -52,6 +52,7 @@ const OptionId kShowWDL{"show-wdl", "UCI_ShowWDL",
                         "Show win, draw and lose probability."};
 const OptionId kShowMovesleft{"show-movesleft", "UCI_ShowMovesLeft",
                               "Show estimated moves left."};
+// kSearchType, kGumbelK, kGumbelVisitC are now globally defined in optionsparser.(h|cc)
 
 const std::unordered_map<std::string, std::unordered_set<std::string>>
     kKnownCommands = {
@@ -228,6 +229,10 @@ void StringUciResponder::PopulateParams(OptionsParser* options) {
   options->Add<BoolOption>(kUciChess960) = false;
   options->Add<BoolOption>(kShowWDL) = true;
   options->Add<BoolOption>(kShowMovesleft) = false;
+  // Use ChoiceOption for SearchType and correctly pass arguments
+  options->Add<ChoiceOption>(kSearchType, std::vector<std::string>{"PUCT", "Gumbel"}) = "PUCT";
+  options->Add<IntOption>(kGumbelK, 1, 32) = 2;
+  options->Add<FloatOption>(kGumbelVisitC, 0.1f, 5.0f) = 1.25f;
   options_ = &options->GetOptionsDict();
 }
 

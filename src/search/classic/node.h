@@ -40,6 +40,7 @@
 #include "neural/encoder.h"
 #include "proto/net.pb.h"
 #include "utils/mutex.h"
+#include <vector> // Add for std::vector, though likely already included via chess/board.h
 
 namespace lczero {
 namespace classic {
@@ -328,6 +329,10 @@ class Node {
   GameResult upper_bound_ : 2;
   // Whether the child_ is actually an array of equal length to edges.
   bool solid_children_ : 1;
+
+  // Gumbel Search members
+  bool gumbel_planned_{false};
+  std::vector<Move> gumbel_top_k_moves_;
 
   // TODO(mooskagh) Unfriend NodeTree.
   friend class NodeTree;

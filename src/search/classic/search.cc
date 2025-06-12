@@ -36,12 +36,15 @@
 #include <iterator>
 #include <sstream>
 #include <thread>
+#include <limits>   // For std::numeric_limits
+#include <utility>  // For std::pair, std::greater
 
 #include "neural/encoder.h"
 #include "search/classic/node.h"
 #include "utils/fastmath.h"
 #include "utils/random.h"
 #include "utils/spinhelper.h"
+#include "utils/optionsparser.h" // For kSearchType, kGumbelK, kGumbelVisitC
 
 namespace lczero {
 namespace classic {
@@ -49,6 +52,14 @@ namespace classic {
 namespace {
 // Maximum delay between outputting "uci info" when nothing interesting happens.
 const int kUciInfoMinimumFrequencyMs = 5000;
+
+float SampleGumbel() {
+    float u = lczero::Random::Get().NextFloat();
+    const float float_epsilon = std::numeric_limits<float>::epsilon();
+    u = std::max(float_epsilon, u);
+    u = std::min(1.0f - float_epsilon, u);
+    return -std::log(-std::log(u));
+}
 
 MoveList MakeRootMoveFilter(const MoveList& searchmoves,
                             SyzygyTablebase* syzygy_tb,
@@ -196,6 +207,16 @@ Search::Search(const NodeTree& tree, Backend* backend,
                            : ContemptMode::WHITE;
     }
   }
+
+  // Initialize Gumbel search parameters
+  std::string search_type_str = options.Get<std::string>(kSearchType);
+  if (search_type_str == "Gumbel") {
+      search_type_ = SearchType::GUMBEL;
+  } else {
+      search_type_ = SearchType::PUCT; // Default or if "PUCT" is specified
+  }
+  gumbel_k_ = options.Get<int>(kGumbelK);
+  gumbel_visit_c_ = options.Get<float>(kGumbelVisitC);
 }
 
 namespace {
@@ -1612,6 +1633,45 @@ void SearchWorker::PickNodesToExtendTask(
   while (current_path.size() > 0) {
     // First prepare visits_to_perform.
     if (current_path.back() == -1) {
+      // Gumbel Planning Phase
+      if (search_->GetSearchType() == lczero::SearchType::GUMBEL && !node->gumbel_planned_) {
+        node->gumbel_planned_ = true; // Mark as planned
+        std::vector<std::pair<float, Move>> gumbel_candidates;
+
+        for (auto edge_it = node->Edges().begin(); edge_it != node->Edges().end(); ++edge_it) {
+            Move move = edge_it.GetMove();
+            float policy_val = edge_it.GetP();
+
+            if (policy_val > std::numeric_limits<float>::epsilon()) {
+                const float gumbel_score = std::log(policy_val) + SampleGumbel();
+                gumbel_candidates.emplace_back(gumbel_score, move);
+            } else if (node->GetNumEdges() == 1 && policy_val <= std::numeric_limits<float>::epsilon()) {
+                // If there's only one move and its policy is near zero, still consider it.
+                const float gumbel_score = SampleGumbel(); // Score will be dominated by Gumbel noise.
+                gumbel_candidates.emplace_back(gumbel_score, move);
+            }
+        }
+
+        if (!gumbel_candidates.empty()) {
+            int k_val = std::min((int)gumbel_candidates.size(), search_->GetGumbelK());
+            if (k_val > 0) {
+                std::partial_sort(gumbel_candidates.begin(),
+                                  gumbel_candidates.begin() + k_val,
+                                  gumbel_candidates.end(),
+                                  std::greater<std::pair<float, Move>>());
+                node->gumbel_top_k_moves_.clear();
+                node->gumbel_top_k_moves_.reserve(k_val);
+                for (int i = 0; i < k_val; ++i) {
+                    node->gumbel_top_k_moves_.push_back(gumbel_candidates[i].second);
+                }
+            } else {
+                 node->gumbel_top_k_moves_.clear(); // k=0 or negative
+            }
+        } else {
+            node->gumbel_top_k_moves_.clear(); // No candidates
+        }
+      }
+
       // Need to do n visits, where n is either collision_limit, or comes from
       // visits_to_perform for the current path.
       int cur_limit = collision_limit;
@@ -1729,10 +1789,36 @@ void SearchWorker::PickNodesToExtendTask(
           int nstarted = current_nstarted[idx];
           const float util = current_util[idx];
           if (idx > cache_filled_idx) {
-            current_score[idx] =
-                current_pol[idx] * puct_mult / (1 + nstarted) + util;
+            // current_score[idx] calculation moved down for Gumbel logic
             cache_filled_idx++;
           }
+
+          // Modified Child Selection Score Calculation
+          float calculated_score;
+          if (search_->GetSearchType() == lczero::SearchType::GUMBEL && node->gumbel_planned_ && !node->gumbel_top_k_moves_.empty()) {
+              Move current_move = cur_iters[idx].GetMove();
+              bool in_plan = false;
+              for (const Move& planned_move : node->gumbel_top_k_moves_) {
+                  if (planned_move == current_move) {
+                      in_plan = true;
+                      break;
+                  }
+              }
+
+              if (in_plan) {
+                  float q_value = util; // util is Q_child_perspective + M_utility
+                  // Note: puct_mult is cpuct * sqrt(parent_visits_sum), Gumbel U is different
+                  float u_value = search_->GetGumbelVisitC() * std::sqrt(std::max(node->GetChildrenVisits(), 1u)) / (1.0f + nstarted);
+                  calculated_score = q_value + u_value;
+              } else {
+                  calculated_score = std::numeric_limits<float>::lowest(); // Prune
+              }
+          } else { // PUCT or Gumbel plan not ready/empty
+              calculated_score = (current_pol[idx] * puct_mult / (1.0f + nstarted)) + util;
+          }
+          current_score[idx] = calculated_score;
+          // End of Modified Child Selection Score Calculation
+
           if (is_root_node) {
             // If there's no chance to catch up to the current best node with
             // remaining playouts, don't consider it.

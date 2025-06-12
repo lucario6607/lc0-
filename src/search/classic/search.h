@@ -43,8 +43,16 @@
 #include "syzygy/syzygy.h"
 #include "utils/logging.h"
 #include "utils/mutex.h"
+#include <vector> // Add for std::vector
 
 namespace lczero {
+
+// SearchType enum class definition
+enum class SearchType {
+  PUCT,
+  GUMBEL
+};
+
 namespace classic {
 
 class Search {
@@ -94,7 +102,17 @@ class Search {
   // from temperature having been applied again.
   void ResetBestMove();
 
+  // Accessors for Gumbel parameters
+  SearchType GetSearchType() const { return search_type_; }
+  int GetGumbelK() const { return gumbel_k_; }
+  float GetGumbelVisitC() const { return gumbel_visit_c_; }
+
  private:
+  // Gumbel Search parameters
+  SearchType search_type_{SearchType::PUCT};
+  int gumbel_k_{2};
+  float gumbel_visit_c_{1.25f};
+
   // Computes the best move, maybe with temperature (according to the settings).
   void EnsureBestMoveKnown();
 

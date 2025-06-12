@@ -37,6 +37,14 @@
 
 namespace lczero {
 
+// Forward declaration
+class OptionsParser;
+
+// Globally accessible OptionId instances
+extern const OptionId kSearchType;
+extern const OptionId kGumbelK;
+extern const OptionId kGumbelVisitC;
+
 class OptionsParser {
  public:
   OptionsParser();
