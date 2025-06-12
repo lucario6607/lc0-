@@ -69,6 +69,9 @@ class Search {
   // Starts worker threads and returns immediately.
   void StartThreads(size_t how_many);
 
+  // Method to change the search position
+  void SetPosition(const GameState& state, Node* new_root, const MoveList& searchmoves);
+
   // Starts search with k threads and wait until it finishes.
   void RunBlocking(size_t threads);
 
