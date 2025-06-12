@@ -355,7 +355,7 @@ class Node {
 #if defined(__i386__) || (defined(__arm__) && !defined(__aarch64__))
 static_assert(sizeof(Node) == 48, "Unexpected size of Node for 32bit compile");
 #else
-static_assert(sizeof(Node) == 64, "Unexpected size of Node");
+static_assert(sizeof(Node) == 88, "Unexpected size of Node (updated for Gumbel members)");
 #endif
 
 // Contains Edge and Node pair and set of proxy functions to simplify access
