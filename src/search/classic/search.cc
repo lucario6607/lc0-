@@ -1635,43 +1635,62 @@ void SearchWorker::PickNodesToExtendTask(
     if (current_path.back() == -1) {
       // Gumbel Planning Phase
       if (search_->GetSearchType() == lczero::SearchType::GUMBEL && !node->isGumbelPlanned()) {
-        node->setGumbelPlanned(true); // Mark as planned
-        std::vector<std::pair<float, Move>> gumbel_candidates;
+        // ===== START OF MODIFICATIONS =====
+        bool execute_gumbel_planning_for_node = true;
+        const int num_edges_in_node = node->GetNumEdges();
+        const int MAX_REASONABLE_CHESS_MOVES = 250; // Max legal moves in chess is 218. 250 is a generous sanity limit.
 
-        for (auto edge_it = node->Edges().begin(); edge_it != node->Edges().end(); ++edge_it) {
-            Move move = edge_it.GetMove();
-            float policy_val = edge_it.GetP();
-
-            if (policy_val > std::numeric_limits<float>::epsilon()) {
-                const float gumbel_score = std::log(policy_val) + SampleGumbel();
-                gumbel_candidates.emplace_back(gumbel_score, move);
-            } else if (node->GetNumEdges() == 1 && policy_val <= std::numeric_limits<float>::epsilon()) {
-                // If there's only one move and its policy is near zero, still consider it.
-                const float gumbel_score = SampleGumbel(); // Score will be dominated by Gumbel noise.
-                gumbel_candidates.emplace_back(gumbel_score, move);
-            }
+        if (num_edges_in_node > MAX_REASONABLE_CHESS_MOVES) {
+            // Optional: If logging were available, log a warning:
+            // LOGFILE << "WARNING: Gumbel planning: Node " << node
+            //         << " reports num_edges = " << num_edges_in_node
+            //         << ", which exceeds sanity limit " << MAX_REASONABLE_CHESS_MOVES
+            //         << ". Skipping Gumbel top-K planning for this node.";
+            execute_gumbel_planning_for_node = false;
         }
 
-        if (!gumbel_candidates.empty()) {
-            int k_val = std::min((int)gumbel_candidates.size(), search_->GetGumbelK());
-            if (k_val > 0) {
-                std::partial_sort(gumbel_candidates.begin(),
-                                  gumbel_candidates.begin() + k_val,
-                                  gumbel_candidates.end(),
-                                  [](const std::pair<float, Move>& a, const std::pair<float, Move>& b) {
-                                      return a.first > b.first; // Compare only by the float score
-                                  });
-                node->clearGumbelTopKMoves();
-                node->reserveGumbelTopKMoves(k_val);
-                for (int i = 0; i < k_val; ++i) {
-                    node->addGumbelTopKMove(gumbel_candidates[i].second);
+        if (execute_gumbel_planning_for_node) {
+        // ===== ORIGINAL GUMBEL PLANNING LOGIC MOVED INSIDE THIS BLOCK =====
+            node->setGumbelPlanned(true); // Mark as planned
+            std::vector<std::pair<float, Move>> gumbel_candidates;
+
+            for (auto edge_it = node->Edges().begin(); edge_it != node->Edges().end(); ++edge_it) {
+                Move move = edge_it.GetMove();
+                float policy_val = edge_it.GetP();
+
+                if (policy_val > std::numeric_limits<float>::epsilon()) {
+                    const float gumbel_score = std::log(policy_val) + SampleGumbel();
+                    gumbel_candidates.emplace_back(gumbel_score, move);
+                } else if (node->GetNumEdges() == 1 && policy_val <= std::numeric_limits<float>::epsilon()) {
+                    // If there's only one move and its policy is near zero, still consider it.
+                    const float gumbel_score = SampleGumbel(); // Score will be dominated by Gumbel noise.
+                    gumbel_candidates.emplace_back(gumbel_score, move);
+                }
+            }
+
+            if (!gumbel_candidates.empty()) {
+                int k_val = std::min((int)gumbel_candidates.size(), search_->GetGumbelK());
+                if (k_val > 0) {
+                    std::partial_sort(gumbel_candidates.begin(),
+                                      gumbel_candidates.begin() + k_val,
+                                      gumbel_candidates.end(),
+                                      [](const std::pair<float, Move>& a, const std::pair<float, Move>& b) {
+                                          return a.first > b.first; // Compare only by the float score
+                                      });
+                    node->clearGumbelTopKMoves();
+                    node->reserveGumbelTopKMoves(k_val);
+                    for (int i = 0; i < k_val; ++i) {
+                        node->addGumbelTopKMove(gumbel_candidates[i].second);
+                    }
+                } else {
+                     node->clearGumbelTopKMoves(); // k=0 or negative
                 }
             } else {
-                 node->clearGumbelTopKMoves(); // k=0 or negative
+                node->clearGumbelTopKMoves(); // No candidates
             }
-        } else {
-            node->clearGumbelTopKMoves(); // No candidates
-        }
+        // ===== END OF ORIGINAL GUMBEL PLANNING LOGIC =====
+        } // Closes "if (execute_gumbel_planning_for_node)"
+        // ===== END OF MODIFICATIONS =====
       }
 
       // Need to do n visits, where n is either collision_limit, or comes from
