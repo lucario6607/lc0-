@@ -1102,6 +1102,80 @@ Search::~Search() {
   LOGFILE << "Search destroyed.";
 }
 
+void Search::SetPosition(Node* new_root_node_for_search) {
+    SharedMutex::Lock lock(this->nodes_mutex_); // Acquire exclusive lock on the search's node mutex
+
+    // Abort any ongoing search operations and wait for worker threads to complete
+    this->Abort();
+    this->Wait();
+
+    // Update the root node for the search
+    this->root_node_ = new_root_node_for_search;
+
+    // Reset initial visits based on the new root node
+    if (this->root_node_) {
+        this->initial_visits_ = this->root_node_->GetN();
+    } else {
+        this->initial_visits_ = 0;
+        // If new_root_node_for_search is null, the search state is effectively invalid.
+        // Further operations might need to handle this gracefully, or an error/assert might be appropriate.
+        // For now, proceed with resetting other members.
+    }
+
+    // Reset search statistics and progress counters
+    this->total_playouts_ = 0;
+    this->total_batches_ = 0;
+    this->cum_depth_ = 0;
+    this->max_depth_ = 0;
+    if (this->nps_start_time_.has_value()) {
+        this->nps_start_time_.reset(); // std::optional::reset()
+    }
+
+    // Reset UCI info state
+    this->last_outputted_info_edge_ = nullptr;
+    this->last_outputted_uci_info_ = lczero::ThinkingInfo(); // Assuming default constructor resets it
+    this->current_best_edge_ = lczero::classic::EdgeAndNode(); // Assuming default constructor resets it
+
+    // Reset best move tracking
+    this->final_bestmove_ = lczero::Move(); // Assuming default constructor gives Move::Null()
+    this->final_pondermove_ = lczero::Move();
+    this->bestmove_is_sent_ = false; // A new search can send a new bestmove
+
+    // Clear any shared collisions from a previous search iteration
+    this->CancelSharedCollisions();
+
+    // Reset tablebase related members for the new search context
+    this->tb_hits_.store(0, std::memory_order_relaxed);
+    this->root_is_in_dtz_ = false;
+
+    // Re-initialize the root move filter.
+    // This uses this->searchmoves_ and this->played_history_ which are const members.
+    // This implies that new_root_node_for_search must be consistent with this existing history.
+    // MakeRootMoveFilter is in an anonymous namespace in this file.
+    if (this->root_node_) { // Only makes sense if root_node_ is valid
+        // The line below is problematic because root_move_filter_ is const.
+        // this->root_move_filter_ = MakeRootMoveFilter(
+        //     this->searchmoves_,
+        //     this->syzygy_tb_,
+        //     this->played_history_, // This is const PositionHistory&
+        //     this->params_.GetSyzygyFastPlay(),
+        //     &this->tb_hits_,
+        //     &this->root_is_in_dtz_
+        // );
+        // To make this work, root_move_filter_ would need to be non-const,
+        // or we'd need a different approach. For this exercise, I'll comment it out
+        // as per the limitations of the current Search class design.
+        // A more complete solution would involve making root_move_filter_ mutable
+        // or redesigning how it's handled.
+    } else {
+        // this->root_move_filter_.clear(); // If it were mutable.
+    }
+    // Note: The original played_history_ (from constructor) is used.
+    // If new_root_node_for_search corresponds to a state not reachable via this->played_history_,
+    // then operations relying on played_history_ for this root_node_ might be inconsistent.
+    // This method is primarily for resetting the search on a new node within the same game context.
+}
+
 //////////////////////////////////////////////////////////////////////////////
 // SearchWorker
 //////////////////////////////////////////////////////////////////////////////
@@ -1635,62 +1709,43 @@ void SearchWorker::PickNodesToExtendTask(
     if (current_path.back() == -1) {
       // Gumbel Planning Phase
       if (search_->GetSearchType() == lczero::SearchType::GUMBEL && !node->isGumbelPlanned()) {
-        // ===== START OF MODIFICATIONS =====
-        bool execute_gumbel_planning_for_node = true;
-        const int num_edges_in_node = node->GetNumEdges();
-        const int MAX_REASONABLE_CHESS_MOVES = 250; // Max legal moves in chess is 218. 250 is a generous sanity limit.
+        node->setGumbelPlanned(true); // Mark as planned
+        std::vector<std::pair<float, Move>> gumbel_candidates;
 
-        if (num_edges_in_node > MAX_REASONABLE_CHESS_MOVES) {
-            // Optional: If logging were available, log a warning:
-            // LOGFILE << "WARNING: Gumbel planning: Node " << node
-            //         << " reports num_edges = " << num_edges_in_node
-            //         << ", which exceeds sanity limit " << MAX_REASONABLE_CHESS_MOVES
-            //         << ". Skipping Gumbel top-K planning for this node.";
-            execute_gumbel_planning_for_node = false;
+        for (auto edge_it = node->Edges().begin(); edge_it != node->Edges().end(); ++edge_it) {
+            Move move = edge_it.GetMove();
+            float policy_val = edge_it.GetP();
+
+            if (policy_val > std::numeric_limits<float>::epsilon()) {
+                const float gumbel_score = std::log(policy_val) + SampleGumbel();
+                gumbel_candidates.emplace_back(gumbel_score, move);
+            } else if (node->GetNumEdges() == 1 && policy_val <= std::numeric_limits<float>::epsilon()) {
+                // If there's only one move and its policy is near zero, still consider it.
+                const float gumbel_score = SampleGumbel(); // Score will be dominated by Gumbel noise.
+                gumbel_candidates.emplace_back(gumbel_score, move);
+            }
         }
 
-        if (execute_gumbel_planning_for_node) {
-        // ===== ORIGINAL GUMBEL PLANNING LOGIC MOVED INSIDE THIS BLOCK =====
-            node->setGumbelPlanned(true); // Mark as planned
-            std::vector<std::pair<float, Move>> gumbel_candidates;
-
-            for (auto edge_it = node->Edges().begin(); edge_it != node->Edges().end(); ++edge_it) {
-                Move move = edge_it.GetMove();
-                float policy_val = edge_it.GetP();
-
-                if (policy_val > std::numeric_limits<float>::epsilon()) {
-                    const float gumbel_score = std::log(policy_val) + SampleGumbel();
-                    gumbel_candidates.emplace_back(gumbel_score, move);
-                } else if (node->GetNumEdges() == 1 && policy_val <= std::numeric_limits<float>::epsilon()) {
-                    // If there's only one move and its policy is near zero, still consider it.
-                    const float gumbel_score = SampleGumbel(); // Score will be dominated by Gumbel noise.
-                    gumbel_candidates.emplace_back(gumbel_score, move);
-                }
-            }
-
-            if (!gumbel_candidates.empty()) {
-                int k_val = std::min((int)gumbel_candidates.size(), search_->GetGumbelK());
-                if (k_val > 0) {
-                    std::partial_sort(gumbel_candidates.begin(),
-                                      gumbel_candidates.begin() + k_val,
-                                      gumbel_candidates.end(),
-                                      [](const std::pair<float, Move>& a, const std::pair<float, Move>& b) {
-                                          return a.first > b.first; // Compare only by the float score
-                                      });
-                    node->clearGumbelTopKMoves();
-                    node->reserveGumbelTopKMoves(k_val);
-                    for (int i = 0; i < k_val; ++i) {
-                        node->addGumbelTopKMove(gumbel_candidates[i].second);
-                    }
-                } else {
-                     node->clearGumbelTopKMoves(); // k=0 or negative
+        if (!gumbel_candidates.empty()) {
+            int k_val = std::min((int)gumbel_candidates.size(), search_->GetGumbelK());
+            if (k_val > 0) {
+                std::partial_sort(gumbel_candidates.begin(),
+                                  gumbel_candidates.begin() + k_val,
+                                  gumbel_candidates.end(),
+                                  [](const std::pair<float, Move>& a, const std::pair<float, Move>& b) {
+                                      return a.first > b.first; // Compare only by the float score
+                                  });
+                node->clearGumbelTopKMoves();
+                node->reserveGumbelTopKMoves(k_val);
+                for (int i = 0; i < k_val; ++i) {
+                    node->addGumbelTopKMove(gumbel_candidates[i].second);
                 }
             } else {
-                node->clearGumbelTopKMoves(); // No candidates
+                 node->clearGumbelTopKMoves(); // k=0 or negative
             }
-        // ===== END OF ORIGINAL GUMBEL PLANNING LOGIC =====
-        } // Closes "if (execute_gumbel_planning_for_node)"
-        // ===== END OF MODIFICATIONS =====
+        } else {
+            node->clearGumbelTopKMoves(); // No candidates
+        }
       }
 
       // Need to do n visits, where n is either collision_limit, or comes from
@@ -2489,106 +2544,6 @@ void SearchWorker::UpdateCounters() {
   if (!work_done) {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
-}
-
-}  // namespace classic
-}  // namespace classic
-
-// Method to change the search position
-void Search::SetPosition(const GameState& state, Node* new_root, const MoveList& new_searchmoves) {
-    SharedMutex::Lock lock(nodes_mutex_); // ACQUIRE LOCK
-
-    Abort(); // Signal workers to stop
-    Wait();  // Wait for them to finish
-
-    // Update internal state to reflect the new position
-    // NOTE: This assumes the underlying NodeTree has already been updated by the caller,
-    // and new_root is the correct head of that tree.
-    root_node_ = new_root;
-
-    // Reset played_history_ (must be mutable or Search needs to take a non-const ref)
-    // For this example, let's assume played_history_ can be reassigned or reset.
-    // If played_history_ is `const PositionHistory& played_history_`, this is not possible.
-    // The Search object would need to be reconstructed.
-    // However, the constructor shows `played_history_(tree.GetPositionHistory())`
-    // which means it's a copy or a reference. If it's a copy, we can modify it.
-    // Let's assume it's a mutable member for the sake of this exercise.
-    // If PositionHistory does not have a Reset method like this, this part needs adjustment.
-    // For now, creating a new PositionHistory and assigning if possible, or this won't compile.
-    // Given `const PositionHistory& played_history_;` in search.h, this is indeed an issue.
-    // The design implies Search is immutable regarding its PositionHistory and root_node_ after construction.
-    // To make SetPosition work as intended, Search would need to store PositionHistory by value
-    // or be able to re-bind its reference (not possible for references).
-    //
-    // For the purpose of this task, I will proceed as if played_history_ can be updated.
-    // This might mean the class design would need to change slightly if this were a real feature.
-    // Or, this SetPosition is more of a conceptual guide for a class that *does* own its tree/history.
-
-    // Reconstruct played_history_ (conceptually)
-    // played_history_ = PositionHistory(state.startpos); // If PositionHistory can be reassigned
-    // for (const Move m : state.moves) {
-    //   played_history_.Append(m); // This would modify the member
-    // }
-    // Due to `const PositionHistory& played_history_`, we cannot reassign it.
-    // This method, as strictly defined for `classic::Search`, cannot change `played_history_`.
-    // It means a `Search` object is tightly bound to the history it was created with.
-    // The only state it can meaningfully reset relates to an ongoing/completed search on THAT history.
-
-    // What CAN be reset:
-    // - Search progress counters
-    // - Search results (best move, ponder move)
-    // - Internal structures like shared_collisions
-    // - Filters and flags derived from the (now new) root_node and history
-
-    // If root_node_ is updated:
-    initial_visits_ = root_node_ ? root_node_->GetN() : 0;
-
-    // Reset search statistics
-    total_playouts_ = 0;
-    total_batches_ = 0;
-    cum_depth_ = 0;
-    max_depth_ = 0;
-    nps_start_time_.reset();
-
-    // Reset info about last known best moves/PVs
-    last_outputted_info_edge_ = nullptr;
-    last_outputted_uci_info_ = ThinkingInfo(); // Reset to default
-    current_best_edge_ = EdgeAndNode();    // Reset current best edge
-
-    final_bestmove_ = Move();
-    final_pondermove_ = Move();
-
-    // stop_ is already true from Abort(). ok_to_respond_bestmove_ and bestmove_is_sent_
-    // should be reset by the context that will start a new search.
-    // For now, ensure bestmove_is_sent_ is false so a new search can report.
-    bestmove_is_sent_ = false;
-    // ok_to_respond_bestmove_ depends on ponder/infinite status of the *next* search.
-
-    CancelSharedCollisions(); // Clear any collisions from a previous search on the old root
-
-    // Re-initialize things that depend on the root position and searchmoves
-    // searchmoves_ = new_searchmoves; // If searchmoves_ were mutable. It's const.
-    // This also means Search is bound to the searchmoves it was created with.
-
-    // Given the const nature of played_history_ and searchmoves_, a SetPosition method
-    // on an existing Search object is severely limited. It can mostly reset the search state
-    // for the *same* root position and *same* searchmoves, e.g., for a ponderhit.
-    // If the FEN/moves actually change, a new Search object is typically created.
-    // For this exercise, I'll assume the main point is the lock/Abort/Wait pattern
-    // and resetting what's resettable. The `state` and `new_searchmoves` params
-    // highlight the mismatch with Search's const members.
-
-    // Re-create root_move_filter (assuming played_history_ and searchmoves_ could be updated)
-    // For now, this will use the original played_history_ and searchmoves_ due to const.
-    // This is not ideal but reflects the constraints of classic::Search's design.
-    root_move_filter_ = MakeRootMoveFilter(
-        searchmoves_, syzygy_tb_, played_history_,
-        params_.GetSyzygyFastPlay(), &tb_hits_, &root_is_in_dtz_);
-    tb_hits_ = 0; // Reset TB hits for the new position
-    root_is_in_dtz_ = false; // Reset DTZ status
-
-    // Caller is responsible for calling StartThreads() again if a new search is desired.
-    // stop_ is currently true.
 }
 
 }  // namespace classic
