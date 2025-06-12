@@ -243,8 +243,6 @@ std::string Node::DebugString() const {
 }
 
 bool Node::MakeSolid() {
-  return false; // Temporarily disable to diagnose
-  /*
   if (solid_children_ || num_edges_ == 0 || IsTerminal()) return false;
   // Can only make solid if no immediate leaf children are in flight since we
   // allow the search code to hold references to leaf nodes across locks.
@@ -288,7 +286,6 @@ bool Node::MakeSolid() {
   child_ = std::unique_ptr<Node>(new_children);
   solid_children_ = true;
   return true;
-  */
 }
 
 void Node::SortEdges() {

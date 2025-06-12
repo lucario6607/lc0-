@@ -264,7 +264,10 @@ class Node {
   bool isGumbelPlanned() const { return gumbel_planned_; }
   void setGumbelPlanned(bool planned) { gumbel_planned_ = planned; }
   const std::vector<Move>& getGumbelTopKMoves() const { return gumbel_top_k_moves_; }
-  void clearGumbelTopKMoves() { gumbel_top_k_moves_.clear(); }
+  void clearGumbelTopKMoves() {
+    std::vector<Move> empty_vec;
+    gumbel_top_k_moves_.swap(empty_vec);
+  }
   void reserveGumbelTopKMoves(size_t n) { gumbel_top_k_moves_.reserve(n); }
   void addGumbelTopKMove(const Move& move) { gumbel_top_k_moves_.push_back(move); }
   bool gumbelTopKMovesEmpty() const { return gumbel_top_k_moves_.empty(); }
