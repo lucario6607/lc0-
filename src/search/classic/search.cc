@@ -54,7 +54,7 @@ namespace {
 const int kUciInfoMinimumFrequencyMs = 5000;
 
 float SampleGumbel() {
-    float u = lczero::Random::Get().GetFloat();
+    float u = lczero::Random::Get().GetFloat(1.0f);
     const float float_epsilon = std::numeric_limits<float>::epsilon();
     u = std::max(float_epsilon, u);
     u = std::min(1.0f - float_epsilon, u);
