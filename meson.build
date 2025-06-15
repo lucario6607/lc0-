@@ -219,6 +219,8 @@ files += [
   'src/search/classic/stoppers/stoppers.cc',
   'src/search/classic/stoppers/timemgr.cc',
   'src/search/classic/wrapper.cc',
+  'src/search/gumbel_factory.cc',
+  'src/search/gumbel_search.cc',
   'src/search/register.cc',
   'src/selfplay/game.cc',
   'src/selfplay/loop.cc',

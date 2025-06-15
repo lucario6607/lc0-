@@ -63,7 +63,12 @@ void RunEngineInternal(SearchFactory* factory) {
   EngineType engine = [&]() {
     if constexpr (std::is_same_v<EngineType, EngineClassic>) {
       return EngineType(options);
+    } else if constexpr (std::is_same_v<EngineType, Engine>) {
+      // Engine's constructor now takes OptionsDict only and determines factory internally
+      return EngineType(options);
     } else {
+      // Fallback for other engine types, though currently only Engine and EngineClassic exist
+      // This line should ideally not be reached with current setup.
       return EngineType(*factory, options);
     }
   }();

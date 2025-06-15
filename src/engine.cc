@@ -34,6 +34,7 @@
 #include "neural/memcache.h"
 #include "neural/register.h"
 #include "neural/shared_params.h"
+#include "search/register.h" // For SearchManager
 #include "syzygy/syzygy.h"
 
 namespace lczero {
@@ -54,6 +55,41 @@ const OptionId kPonderId{
 
 const OptionId kPreload{"preload", "",
                         "Initialize backend and load net on engine startup."};
+
+const OptionId kSearchType{
+    "SearchType", "SearchType", "Search algorithm to use.",
+    "mcts",       // default value
+    {"mcts", "gumbel"}  // allowed values
+};
+const OptionId kGumbelTopActions{
+    "GumbelTopActions", "GumbelTopActions",
+    "Number of top actions for Gumbel search (m_search).",
+    16,           // default value
+    1,            // min value
+    128           // max value
+};
+const OptionId kGumbelCScale{
+    "GumbelCScale", "GumbelCScale",
+    "CScale for Gumbel search, actual c_scale = GumbelCScale / 100.0.",
+    100,          // default value
+    1,            // min value
+    1000          // max value
+};
+const OptionId kGumbelKVisit{
+    "GumbelKVisit", "GumbelKVisit",
+    "KVisit for Gumbel search.",
+    8,            // default value
+    1,            // min value
+    64            // max value
+};
+const OptionId kGumbelSeed{
+    "GumbelSeed", "GumbelSeed",
+    "Seed for Gumbel search, -1 for random.",
+    -1,           // default value
+    -1,           // min value
+    INT_MAX       // max value
+};
+const OptionId kGumbelCompletedQ{"GumbelCompletedQ", "GumbelCompletedQ", "Use completed Q values in Gumbel search.", true};
 }  // namespace
 
 void Engine::PopulateOptions(OptionsParser* options) {
@@ -62,6 +98,14 @@ void Engine::PopulateOptions(OptionsParser* options) {
   options->Add<BoolOption>(kStrictUciTiming) = false;
   options->HideOption(kStrictUciTiming);
   options->Add<BoolOption>(kPreload) = false;
+
+  // Gumbel search options
+  options->Add<StringOption>(kSearchType);
+  options->Add<IntOption>(kGumbelTopActions);
+  options->Add<IntOption>(kGumbelCScale);
+  options->Add<IntOption>(kGumbelKVisit);
+  options->Add<IntOption>(kGumbelSeed);
+  options->Add<BoolOption>(kGumbelCompletedQ);
 }
 
 namespace {
@@ -137,10 +181,28 @@ class Engine::UciPonderForwarder : public UciResponder {
   Engine* const engine_;
 };
 
-Engine::Engine(const SearchFactory& factory, const OptionsDict& opts)
+Engine::Engine(const OptionsDict& opts)
     : uci_forwarder_(std::make_unique<UciPonderForwarder>(this)),
-      options_(opts),
-      search_(factory.CreateSearch(uci_forwarder_.get(), &options_)) {
+      options_(opts) {
+  const std::string search_type_name =
+      options_.Get<std::string>(kSearchType);
+  SearchManager* search_manager = SearchManager::Get();
+  SearchFactory* factory =
+      search_manager->GetFactoryByName(search_type_name);
+
+  if (!factory) {
+    // Fallback to "classic" if specified type not found or handle error
+    CERR << "Error: Search type '" << search_type_name
+              << "' not found. Falling back to 'classic'." << std::endl;
+    factory = search_manager->GetFactoryByName("classic");
+    if (!factory) {
+      // This should not happen if "classic" is always registered
+      throw Exception("Critical: Default search type 'classic' not found.");
+    }
+  }
+
+  search_ = factory->CreateSearch(uci_forwarder_.get(), &options_);
+
   if (options_.Get<bool>(kPreload)) {
     UpdateBackendConfig();
     EnsureSyzygyTablebasesLoaded();
